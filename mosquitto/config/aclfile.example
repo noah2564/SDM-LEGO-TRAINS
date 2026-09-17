@@ -1,0 +1,27 @@
+# Example ACL file. Copy to mosquitto/config/aclfile and reference it from
+# mosquitto.conf (acl_file /mosquitto/config/aclfile) once authentication is
+# enabled. The principle: the backend is the only thing allowed to issue
+# commands, and each device can only touch its own train's topics.
+
+# --- backend: reads everything the fleet reports, writes commands ---------
+user backend
+topic read  trains/+/status
+topic read  trains/+/telemetry
+topic read  trains/+/event
+topic write trains/+/command
+topic write system/command
+topic write system/heartbeat
+topic write healthcheck/broker
+
+# --- devices --------------------------------------------------------------
+# Give every Pico its own broker user, named after its train id. %u expands
+# to the username, so the user "train-001" can only reach train-001's topics
+# and a compromised train cannot drive any other train.
+pattern write trains/%u/status
+pattern write trains/%u/telemetry
+pattern write trains/%u/event
+pattern read  trains/%u/command
+
+# Broadcast topics every device may read and none may write.
+pattern read system/command
+pattern read system/heartbeat

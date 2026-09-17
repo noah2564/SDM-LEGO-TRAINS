@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E1512">
+<title>Depot &middot; LEGO train control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🚂</text></svg>">
+</head>
+<body>
+
+<header class="desk-head">
+  <div class="wordmark">
+    <span class="wordmark-mark" aria-hidden="true"></span>
+    <h1>Depot</h1>
+    <p>Fleet control</p>
+  </div>
+
+  <div class="block-panel" id="block-panel">
+    <div class="gauge" id="gauge-total"><b>0</b><span>trains</span></div>
+    <div class="gauge gauge-online" id="gauge-online"><b>0</b><span>online</span></div>
+    <div class="gauge gauge-offline" id="gauge-offline"><b>0</b><span>offline</span></div>
+    <div class="gauge gauge-moving" id="gauge-moving"><b>0</b><span>moving</span></div>
+  </div>
+
+  <div class="link-state">
+    <span class="lamp" id="link-lamp" data-state="unknown"></span>
+    <span id="link-text">Connecting to the control server</span>
+    <button class="ghost" id="add-train">Add a train</button>
+  </div>
+</header>
+
+<main>
+  <section id="discovery" class="discovery" hidden>
+    <h2>Unregistered devices on the network</h2>
+    <div id="discovery-list" class="discovery-list"></div>
+  </section>
+
+  <section id="fleet" class="fleet" aria-live="polite"></section>
+
+  <section id="empty" class="empty" hidden>
+    <h2>No trains yet</h2>
+    <p>Register a train to start controlling it. The train id you choose here is
+       the same id the Pico W publishes under, so keep them matched.</p>
+    <button class="primary" id="empty-add">Add your first train</button>
+  </section>
+</main>
+
+<div class="estop-bar">
+  <button id="estop" class="estop">
+    <span class="estop-label">Emergency stop</span>
+    <span class="estop-sub">Cuts power to every train</span>
+  </button>
+  <button id="estop-clear" class="release" hidden>Release all</button>
+</div>
+
+<!-- Detail drawer -->
+<aside id="drawer" class="drawer" hidden aria-label="Train detail">
+  <div class="drawer-head">
+    <div>
+      <h2 id="drawer-name">Train Details</h2>
+      <p id="drawer-sub"></p>
+    </div>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+<div id="scrim" class="scrim" hidden></div>
+
+<!-- Add/edit dialog -->
+<dialog id="train-dialog">
+  <form id="train-form" method="dialog">
+    <h2 id="dialog-title">Add a train</h2>
+    <label>Train id
+      <input name="id" required placeholder="train-001" pattern="[A-Za-z0-9][A-Za-z0-9_.\-]{1,63}">
+      <small>Used in the MQTT topics. Must match TRAIN_ID on the Pico W.</small>
+    </label>
+    <label>Name
+      <input name="name" required placeholder="ICE" maxlength="120">
+    </label>
+    <label>Device id
+      <input name="device_id" required placeholder="pico-001" pattern="[A-Za-z0-9][A-Za-z0-9_.\-]{1,63}">
+      <small>The Pico W running this train. One Pico, one train.</small>
+    </label>
+    <label>Description
+      <input name="description" placeholder="Passenger, outer loop" maxlength="1000">
+    </label>
+    <label>Speed limit
+      <input name="max_speed" type="number" min="1" max="100" value="100">
+      <small>Commands above this are refused by the backend.</small>
+    </label>
+    <p class="form-error" id="form-error" hidden></p>
+    <menu>
+      <button type="button" class="ghost" id="dialog-cancel">Cancel</button>
+      <button type="submit" class="primary" id="dialog-submit">Add train</button>
+    </menu>
+  </form>
+</dialog>
+
+<div id="toasts" class="toasts" aria-live="assertive"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

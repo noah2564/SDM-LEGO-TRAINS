@@ -1,0 +1,105 @@
+# LEGO train control stack.
+#
+#   docker compose up -d                 broker + backend + web UI
+#   docker compose --profile sim up -d   ...and three simulated trains
+#
+# Ports are configurable in .env so the stack can sit next to other things on
+# the same host.
+
+name: lego-train-control
+
+services:
+  # ------------------------------------------------------------------ broker
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: lego-mosquitto
+    restart: unless-stopped
+    ports:
+      # Devices on the LAN connect here. Do not forward this port to the
+      # internet: see SECURITY in README.md.
+      - "${MQTT_PORT:-1883}:1883"
+      # WebSocket listener, for browser-based MQTT debugging tools only.
+      - "${MQTT_WS_PORT:-9001}:9001"
+    volumes:
+      # Writable so `mosquitto_passwd` can create the password file in place
+      # when you turn on authentication. Nothing else writes here.
+      - ./mosquitto/config:/mosquitto/config
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+    healthcheck:
+      # Publishing to a scratch topic proves the listener is actually serving.
+      # With authentication enabled, add: -u "$$MQTT_USERNAME" -P "$$MQTT_PASSWORD"
+      test: ["CMD-SHELL", "mosquitto_pub -h 127.0.0.1 -p 1883 -t healthcheck/broker -m up -q 1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ----------------------------------------------------------------- backend
+  backend:
+    build:
+      context: ./backend
+    container_name: lego-backend
+    restart: unless-stopped
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-lego-backend}
+      MQTT_KEEPALIVE: ${MQTT_KEEPALIVE:-30}
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////data/trains.db}
+      MAX_SPEED: ${MAX_SPEED:-100}
+      OFFLINE_TIMEOUT_SECONDS: ${OFFLINE_TIMEOUT_SECONDS:-20}
+      HEARTBEAT_INTERVAL_SECONDS: ${HEARTBEAT_INTERVAL_SECONDS:-2}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    volumes:
+      # Holds the SQLite file. Irrelevant when DATABASE_URL points at Postgres.
+      - backend-data:/data
+    ports:
+      # Exposed for curl and the OpenAPI docs; the UI reaches the backend
+      # through the frontend's reverse proxy, not this port.
+      - "${API_PORT:-8000}:8000"
+
+  # ---------------------------------------------------------------- web UI
+  frontend:
+    build:
+      context: ./frontend
+    container_name: lego-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+  # -------------------------------------------------------------- simulator
+  # Only starts with --profile sim. Behaves like real Pico Ws, so nothing
+  # else in the stack knows or cares that it is running.
+  simulator:
+    build:
+      context: ./simulator
+    container_name: lego-simulator
+    restart: unless-stopped
+    profiles: ["sim"]
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      SIM_COUNT: ${SIM_COUNT:-3}
+      TELEMETRY_INTERVAL: ${SIM_TELEMETRY_INTERVAL:-2.0}
+      SAFETY_TIMEOUT: ${SIM_SAFETY_TIMEOUT:-6.0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+volumes:
+  mosquitto-data:
+  mosquitto-log:
+  backend-data:
