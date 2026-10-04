@@ -43,6 +43,9 @@ body {
 h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; letter-spacing: .01em; }
 
 button { font-family: var(--font-body); cursor: pointer; }
+
+/* Author display rules (flex, grid, ...) would otherwise override the hidden attribute. */
+[hidden] { display: none !important; }
 button:focus-visible, input:focus-visible, a:focus-visible {
   outline: 3px solid var(--brass);
   outline-offset: 2px;
