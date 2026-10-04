@@ -24,6 +24,7 @@ as adding the second: register it in the UI, flash a Pico with its train id.
 - [REST API](#rest-api)
 - [Adding a train](#adding-a-train)
 - [Configuring a Pico W](#configuring-a-pico-w)
+- [The LEGO hub (City Hub, LWP3)](#the-lego-hub-city-hub-lwp3)
 - [Safety model](#safety-model)
 - [Running the simulator](#running-the-simulator)
 - [Debugging with MQTT](#debugging-with-mqtt)
@@ -294,15 +295,135 @@ MOTOR_DIR_B_PIN (GP13) → IN2
 motor                  → OUT1 / OUT2
 ```
 
-**Using a different LEGO hub.** `lego_hub.py` defines one interface —
+**Using the real LEGO hub.** `lego_hub.py` defines one interface —
 `apply(speed, direction)`, `coast()`, `brake()`, `battery_voltage()`,
-`connected()` — with two implementations: the H-bridge driver above and a mock
-that logs instead of driving. A Powered Up / Control+ hub over Bluetooth means
-adding a third class implementing those five methods and changing
-`HUB_DRIVER`. Nothing else in the firmware, and nothing at all in the backend
-or UI, changes. That isolation is deliberate: the exact hub protocol was not
-specified, so everything around it is complete and the hub layer is a
-one-file swap.
+`connected()` — and currently ships two implementations: the H-bridge driver
+above and a mock that logs instead of driving. The hub we actually have is a
+Powered Up City Hub that speaks LWP3 over Bluetooth Low Energy; what it
+reports and which commands work is documented in
+[The LEGO hub](#the-lego-hub-city-hub-lwp3). **A driver for it is not written
+yet** — it would be a third class in `lego_hub.py` implementing the same
+interface, selected with `HUB_DRIVER`. Nothing else in the firmware, and
+nothing in the backend or UI, needs to change.
+
+---
+
+## The LEGO hub (City Hub, LWP3)
+
+Everything in this section was observed on our own hub with `lwp3_probe.py`
+(see [below](#probing-the-hub)), except where marked *untested*.
+
+### What we have
+
+| | |
+|---|---|
+| Hub | LEGO Powered Up **City Hub (88009)**, advertised name `HUB NO.4` |
+| Manufacturer string | `LEGO System A/S` |
+| Protocol | LWP3 (LEGO Wireless Protocol 3.0), reported version bytes `00 03` |
+| Firmware / hardware | raw bytes `00 00 01 10` / `00 00 00 01` (not decoded) |
+| Transport | Bluetooth Low Energy, hub is the peripheral |
+| Advertisement | LEGO manufacturer id `0x0397`; system type byte `0x41` |
+
+The hub is not a Wi-Fi device. Whatever drives it — a Pico W, an ESP32 or the
+PC directly — must act as a BLE central and write to one GATT characteristic.
+
+### What is plugged in
+
+Reported by the hub itself in its "Hub Attached I/O" messages on connect:
+
+| Port | Id | Device | Notes |
+|---|---|---|---|
+| 0 (A) | `0x02` | train motor | moves the train |
+| 1 (B) | `0x08` | light | LEGO light |
+| 50 (`0x32`) | `0x17` | hub RGB LED | built in |
+| 59 (`0x3B`) | `0x15` | current sensor | built in, not read yet |
+| 60 (`0x3C`) | `0x14` | voltage sensor | built in, not read yet |
+
+Both external ports are occupied. There is **no position sensing** (no
+colour/distance sensor): the hub only knows its own battery voltage and motor
+current, and the system has no way to know where a train is on the track.
+
+### Connecting
+
+```
+service         00001623-1212-efde-1623-785feabcd123
+characteristic  00001624-1212-efde-1623-785feabcd123   write, write-without-response, read, notify
+```
+
+Subscribe to notifications on the characteristic, then write commands to it.
+Every packet is `[length] [hub id = 0x00] [message type] [payload…]`, where the
+length byte counts the whole packet including itself.
+
+Windows note: the hub may be hidden by a stale GATT cache. `bleak` is told to
+ignore the cache with `winrt={"use_cached_services": False}`.
+
+### Commands
+
+Seen working or not working on this hub:
+
+| Command | Bytes | Status |
+|---|---|---|
+| Motor, forward at 50 | `08 00 81 00 11 51 00 32` | **works** |
+| Motor stop | `08 00 81 00 11 51 00 00` | *untested* (expected: coast) |
+| Motor reverse at 50 | `08 00 81 00 11 51 00 CE` | *untested* (`0xCE` = −50 as a signed byte) |
+| Motor brake | `08 00 81 00 11 51 00 7F` | *untested* (`0x7F` = 127 = brake) |
+| Light on port B at 50% | `08 00 81 01 11 51 00 32` | *untested* (brightness 0–100) |
+| Hub LED mode: colour index | `0A 00 41 32 00 01 00 00 00 00` | works, then send colour below |
+| Hub LED colour | `08 00 81 32 11 51 00 <c>` | **works** (`c`: 0 off, 1 pink, 2 purple, 3 blue, 4 light blue, 5 cyan, 6 green, 7 yellow, 8 orange, 9 red, 10 white) |
+| Hub LED mode: RGB | `0A 00 41 32 01 01 00 00 00 00` | *untested*; then `0A 00 81 32 11 51 01 <r> <g> <b>` |
+| Request a hub property | `05 00 01 <prop> 05` | **works** |
+| `StartPower` (`… 81 <port> 11 01 <power>`) | `07 00 81 00 11 01 32` | **does not move the motor** — the hub acknowledges it but nothing happens; use the `51 00` form |
+
+The general form of a motor/light write is
+`08 00 81 <port> 11 51 <mode> <data>`; mode 0 on a basic motor or light is
+direct power/brightness, as a signed byte for motors.
+
+**Replies.** After each output command the hub answers
+`05 00 82 <port> <flags>`; we always saw flags `0A`. As far as we know this
+means "command completed, hub idle". It does **not** prove the motor moved
+(see `StartPower` above), so never treat it as confirmation of motion.
+
+Hub properties (`prop`): `01` name, `03` firmware version, `04` hardware
+version, `06` battery %, `08` manufacturer, `0A` LWP version, `0B` system type.
+Observed on connect: name `HUB NO.4`, battery 100 %, system type `0x41`.
+
+### What the hub can do
+
+- Drive the train motor forward and backward at a chosen power (confirmed
+  forward only).
+- Switch/dim the light on port B (untested).
+- Set its own LED colour, which doubles as a status lamp.
+- Report battery state, and — once subscribed to ports 59/60 — voltage and
+  motor current. Current is a candidate "train is blocked/stalled" signal.
+- Announce when something is plugged in or removed from a port.
+
+### What it cannot do (as set up)
+
+- Tell us where it is: no position, speed or distance feedback. "Speed" in
+  telemetry is only the last commanded value.
+- Join Wi-Fi or speak MQTT. It needs a BLE bridge (see above).
+- Run our safety watchdog. **What the hub does to a running motor when the BLE
+  link drops is not known yet** and must be tested before relying on it: start
+  the motor at a low power, close the controlling program or leave BLE range,
+  and watch whether the train stops.
+
+### Probing the hub
+
+`lwp3_probe.py` (repo root) is a standalone tool for exploring the hub. It
+needs only `bleak`:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+pip install bleak
+python lwp3_probe.py          # scan, connect, print everything the hub says
+```
+
+Turn the hub on (green button, LED blinking) and close the official LEGO app
+first; the hub accepts one connection at a time. At the `lwp3>` prompt,
+`raw <hex bytes>` sends exactly what you type. Its `power`/`brake` helpers
+currently use the `StartPower` form that does **not** move the motor — use
+`raw` with the `51 00` commands above until that is changed.
 
 ---
 
