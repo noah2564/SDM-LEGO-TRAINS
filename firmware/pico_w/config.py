@@ -15,8 +15,8 @@ TRAIN_NAME = "ICE"
 FIRMWARE_VERSION = "1.0.0"
 
 # --- Wi-Fi ------------------------------------------------------------
-WIFI_SSID = 'VictoryRoyale'
-WIFI_PASSWORD = 'ChristIsKing'
+WIFI_SSID = ''
+WIFI_PASSWORD = ''
 WIFI_COUNTRY = ""  # regulatory domain; affects the usable channels
 WIFI_CONNECT_TIMEOUT_S = 20
 
