@@ -15,9 +15,9 @@ TRAIN_NAME = "ICE"
 FIRMWARE_VERSION = "1.1.0"
 
 # --- Wi-Fi ------------------------------------------------------------
-WIFI_SSID = "MARK-V 6730"
-WIFI_PASSWORD = "LegoTrains"
-WIFI_COUNTRY = "DK"  # regulatory domain; affects the usable channels
+WIFI_SSID = ''
+WIFI_PASSWORD = ''
+WIFI_COUNTRY = ""  # regulatory domain; affects the usable channels
 WIFI_CONNECT_TIMEOUT_S = 20
 
 # --- MQTT -------------------------------------------------------------
