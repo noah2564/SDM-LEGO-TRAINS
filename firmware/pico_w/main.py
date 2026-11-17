@@ -46,8 +46,9 @@ import config
 from mqtt_client import TrainMqttClient
 
 from machine import Pin, I2C, ADC, PWM
-light  = ADC(27)
-print(int(light.read_u16()))
+# light sensor disabled
+# light  = ADC(27)
+# print(int(light.read_u16()))
 # --------------------------------------------------------------------------
 # Logging
 # --------------------------------------------------------------------------
@@ -379,6 +380,162 @@ class Lwp3Hub:
 
 
 # --------------------------------------------------------------------------
+# Obstacle guard: HC-SR04 sensors, decided entirely on the Pico
+# --------------------------------------------------------------------------
+FAR_CM = 999.0
+
+
+class ObstacleGuard:
+    """Reads the front sensors round-robin (one ping per update() call, so the
+    main loop never blocks for long) and turns the nearest distance into a
+    forward speed limit of 0..100 %.
+
+      distance >= SENSOR_SLOW_START_CM         no limit
+      CRAWL_CM < distance < SLOW_START_CM      limit shrinks to the crawl speed
+      STOP_CM < distance <= CRAWL_CM           crawl speed
+      distance <= STOP_CM                      stop
+
+    Assumption: nothing that is not a train sits within CRAWL_CM of the track
+    (no tunnel mouths, no decoration). If something stays within CRAWL_CM for
+    SENSOR_HALT_AFTER_S the train halts, and stays halted until the way is
+    clear again. When it clears, the train resumes at crawl speed and speeds up
+    gradually (SENSOR_ACCEL_PCT_S). A fast approach counts as nearer than it is:
+    SENSOR_LOOKAHEAD_S seconds of closing speed are subtracted from the
+    distance. No echo means 'clear'. Only forward driving is limited; reversing
+    is always allowed, which is the way out of a halt. Thresholds: config.py.
+    """
+
+    def __init__(self):
+        def cfg(name, default):
+            return getattr(config, name, default)
+
+        self.enabled = bool(cfg("SENSORS_ENABLED", True))
+        self._timeout_us = cfg("SENSOR_TIMEOUT_US", 12000)
+        self._min_cm = cfg("SENSOR_MIN_CM", 2.0)
+        self._window = cfg("SENSOR_WINDOW", 3)
+        self._slow_cm = cfg("SENSOR_SLOW_START_CM", 30)
+        self._crawl_cm = cfg("SENSOR_CRAWL_CM", 10)
+        self._stop_cm = cfg("SENSOR_STOP_CM", 5)
+        self._crawl_speed = cfg("SENSOR_CRAWL_SPEED", 20)
+        self._halt_after_s = cfg("SENSOR_HALT_AFTER_S", 1.5)
+        self._accel = cfg("SENSOR_ACCEL_PCT_S", 40)
+        self._lookahead_s = cfg("SENSOR_LOOKAHEAD_S", 0.6)
+        self._max_closing = cfg("SENSOR_MAX_CLOSING_CM_S", 100)
+        self._resume_cm = cfg("SENSOR_RESUME_MARGIN_CM", 3)
+
+        specs = cfg("SENSOR_PINS", ())
+        self.names = []
+        self._pins = []
+        self._hist = []
+        self._next = 0
+        self._trace = []
+        self.distances = []
+        self.nearest = FAR_CM
+        self.closing = 0.0
+        self.limit = 100.0
+        self.state = "clear"
+        self._close_since = None     # when nearest first dropped to CRAWL_CM
+        self._halted = False
+        self._last_decide = time.ticks_ms()
+        if not specs:
+            self.enabled = False
+        if not self.enabled:
+            return
+        for name, trig, echo in specs:
+            self.names.append(name)
+            self._pins.append((Pin(trig, Pin.OUT, value=0), Pin(echo, Pin.IN)))
+            self._hist.append([])
+            self.distances.append(FAR_CM)
+
+    def _ping(self, index):
+        trig, echo = self._pins[index]
+        trig.value(0)
+        time.sleep_us(2)
+        trig.value(1)
+        time.sleep_us(10)
+        trig.value(0)
+        micros = machine.time_pulse_us(echo, 1, self._timeout_us)
+        if micros < 0:
+            return FAR_CM
+        # Sound travels ~0.0343 cm/us; halve it for the round trip. Anything
+        # under the sensor's minimum range is clamped: too close is still close.
+        return max(micros * 0.0343 / 2, self._min_cm)
+
+    def update(self):
+        """Ping the next sensor and re-evaluate the speed limit."""
+        if not self.enabled:
+            return
+        index = self._next
+        self._next = (index + 1) % len(self._pins)
+        history = self._hist[index]
+        history.append(self._ping(index))
+        if len(history) > self._window:
+            history.pop(0)
+        self.distances[index] = sorted(history)[len(history) // 2]  # median
+
+        now = time.ticks_ms()
+        self.nearest = min(self.distances)
+        trace = self._trace
+        trace.append((now, self.nearest))
+        while time.ticks_diff(now, trace[0][0]) > 1000:
+            trace.pop(0)
+        # cm/s the nearest object is getting closer (negative = moving away),
+        # measured against the newest sample that is at least 400 ms old.
+        self.closing = 0.0
+        base = None
+        for sample in trace:
+            if time.ticks_diff(now, sample[0]) >= 400:
+                base = sample
+            else:
+                break
+        if base is not None and base[1] < FAR_CM:
+            closing = (base[1] - self.nearest) * 1000 / time.ticks_diff(now, base[0])
+            # Cap it: an object popping into view (curve, tunnel) is not a real 3 m/s.
+            self.closing = min(closing, self._max_closing)
+        self._decide(now)
+
+    def _decide(self, now):
+        crawl = float(self._crawl_speed)
+        d = self.nearest - max(0.0, self.closing) * self._lookahead_s
+        if d <= self._stop_cm:
+            target = 0.0
+        elif d >= self._slow_cm:
+            target = 100.0
+        elif d <= self._crawl_cm:
+            target = crawl
+        else:
+            target = crawl + (100.0 - crawl) * (d - self._crawl_cm) / (self._slow_cm - self._crawl_cm)
+
+        # Stuck close to something for too long: halt until it is clear again.
+        if self.nearest <= self._crawl_cm:
+            if self._close_since is None:
+                self._close_since = now
+            elif time.ticks_diff(now, self._close_since) >= self._halt_after_s * 1000:
+                self._halted = True
+        elif self.nearest > self._crawl_cm + self._resume_cm:
+            self._close_since = None
+            self._halted = False
+        if self._halted:
+            target = 0.0
+
+        # Brake at once, speed up gradually.
+        dt = time.ticks_diff(now, self._last_decide) / 1000
+        self._last_decide = now
+        if target > self.limit:
+            target = min(target, self.limit + self._accel * dt)
+            if 0 < target < crawl:      # motors stall below crawl speed
+                target = crawl
+        self.limit = target
+        self.state = "stopped" if target == 0 else ("slowing" if target < 100 else "clear")
+
+    def apply(self, commanded):
+        """Signed speed the hub should actually get for this commanded speed."""
+        if not self.enabled or commanded <= 0:
+            return commanded
+        return min(commanded, int(self.limit))
+
+
+# --------------------------------------------------------------------------
 # Status LED
 # --------------------------------------------------------------------------
 class StatusLed:
@@ -421,6 +578,18 @@ class TrainNode:
         self.mqtt = TrainMqttClient(config, on_command=self._handle_command, log=log)
         self.wlan = network.WLAN(network.STA_IF)
 
+        try:
+            self.guard = ObstacleGuard()
+        except Exception as exc:
+            log("Obstacle sensors unavailable: {}".format(exc), "ERROR")
+            self.guard = ObstacleGuard.__new__(ObstacleGuard)
+            self.guard.enabled = False
+        self._applied = 0            # speed last sent to the hub
+        self._last_guard_event = 0
+        self._csv = None
+        self._csv_rows = 0
+        self._open_csv()
+
         self.speed = 0
         self._last_contact = time.ticks_ms()
         self._stopped_by_watchdog = False
@@ -428,6 +597,7 @@ class TrainNode:
         self._last_ping = 0
         self._last_battery_req = 0
         self._pending_events = []
+        self._last_status_ms = 0
 
     # -- Wi-Fi ---------------------------------------------------------------
     def connect_wifi(self):
@@ -436,6 +606,10 @@ class TrainNode:
         except Exception:
             pass
         self.wlan.active(True)
+        try:
+            self.wlan.config(pm=0xA11140)  # performance power mode: joins hotspots more reliably
+        except Exception:
+            pass
         if self.wlan.isconnected():
             return True
         log("Connecting to Wi-Fi '{}'".format(config.WIFI_SSID))
@@ -467,9 +641,78 @@ class TrainNode:
                 self.hub.set_power(port, power)
                 time.sleep_ms(10)
 
+    def _update_drive(self, force=False):
+        """Send min(commanded speed, sensor limit) to the hub when it changes."""
+        if not self.hub.connected:
+            return
+        target = self.guard.apply(self.speed)
+        if force or target != self._applied:
+            self._apply_to_hub(target)
+            self._applied = target
+
+    def _guard_step(self):
+        """One sensor ping, then re-apply the limit and report state changes."""
+        if not self.guard.enabled:
+            return
+        before = self.guard.state
+        self.guard.update()
+        self._update_drive()
+        self._log_row()
+        now = time.ticks_ms()
+        if (self.guard.state != before and self.speed > 0
+                and time.ticks_diff(now, self._last_guard_event) >= 1000):
+            self._last_guard_event = now
+            severity = "warning" if self.guard.state == "stopped" else "info"
+            self._pending_events.append((
+                "obstacle",
+                "{}: nearest {:.0f} cm, speed limit {}%, applied {}".format(
+                    self.guard.state, self.guard.nearest,
+                    int(self.guard.limit), self._applied),
+                severity,
+            ))
+            self._publish_telemetry(force=True)
+
+    def _open_csv(self):
+        if not (self.guard.enabled and getattr(config, "SENSOR_LOG_CSV", False)):
+            return
+        try:
+            import os
+            n = 1
+            existing = os.listdir()
+            while "log_%03d.csv" % n in existing:
+                n += 1
+            self._csv = open("log_%03d.csv" % n, "w")
+            self._csv.write("t_ms,%s,nearest_cm,closing_cm_s,limit,commanded,applied\n"
+                            % ",".join(self.guard.names))
+        except Exception as exc:
+            log("CSV log unavailable: {}".format(exc), "WARNING")
+            self._csv = None
+
+    def _log_row(self):
+        if self._csv is None:
+            return
+        try:
+            self._csv.write("%d,%s,%.1f,%.1f,%d,%d,%d\n" % (
+                time.ticks_ms(),
+                ",".join("%.1f" % d for d in self.guard.distances),
+                self.guard.nearest, self.guard.closing,
+                int(self.guard.limit), self.speed, self._applied))
+            self._csv_rows += 1
+            if self._csv_rows % 20 == 0:
+                self._csv.flush()
+            if self._csv_rows % 200 == 0:
+                import os
+                stat = os.statvfs("/")
+                if stat[0] * stat[3] < 100000:   # keep some flash free
+                    self._csv.close()
+                    self._csv = None
+        except Exception:
+            self._csv = None
+
     def _stop_hub(self, reason):
         """Force speed to 0 and tell the hub (best effort)."""
         self.speed = 0
+        self._applied = 0
         if not self.hub.connected:
             return
         try:
@@ -521,8 +764,8 @@ class TrainNode:
                     ("command_rejected", "Hub not connected", "warning")
                 )
                 return
-            self._apply_to_hub(target)
-            log("Backend -> hub: speed {}".format(target), "INFO")
+            self._update_drive(force=True)
+            log("Backend -> hub: speed {} (applied {})".format(target, self._applied), "INFO")
             self._pending_events.append(("command", "speed {}".format(target), "info"))
             self._publish_telemetry(force=True)
         except Exception as exc:
@@ -556,10 +799,17 @@ class TrainNode:
         telemetry = {
             "train_id": config.TRAIN_ID,
             "speed": self.speed,
+            "speed_applied": self._applied,
             "hub_connected": self.hub.connected,
             "battery": self.hub.battery,
             "firmware": config.FIRMWARE_VERSION,
         }
+        if self.guard.enabled:
+            telemetry["distance_cm"] = [
+                None if d >= FAR_CM else round(d, 1) for d in self.guard.distances
+            ]
+            telemetry["obstacle"] = self.guard.state
+            telemetry["speed_limit"] = int(self.guard.limit)
         try:
             telemetry["rssi"] = self.wlan.status("rssi")
         except Exception:
@@ -585,6 +835,20 @@ class TrainNode:
             self.led.blink(2, 0.08)
             return False
 
+    # -- console heartbeat ----------------------------------------------------------
+    def _print_status(self):
+        """Every 5 s: one line saying what the node is doing right now."""
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self._last_status_ms) < 5000:
+            return
+        self._last_status_ms = now
+        near = "off"
+        if self.guard.enabled:
+            near = "{:.0f}cm {}".format(min(self.guard.nearest, 999), self.guard.state)
+        log("alive: wifi={} mqtt={} hub={} speed={} applied={} near={}".format(
+            self.wifi_ok(), self.mqtt.connected, self.hub.connected,
+            self.speed, self._applied, near))
+
     # -- main loop -------------------------------------------------------------------
     def run(self):
         log("Train node {} ({}) starting".format(config.TRAIN_ID, config.DEVICE_ID))
@@ -592,6 +856,7 @@ class TrainNode:
         then = time.time()
         while True:
             try:
+                self._print_status()
                 if not self.wifi_ok():
                     self.on_connection_lost()
                     self.mqtt.connected = False
@@ -628,6 +893,7 @@ class TrainNode:
 
                 self.mqtt.check_messages()
                 self.hub.poll()
+                self._guard_step()
 
                 if self.check_safety():
                     self._pending_events.append(
@@ -640,11 +906,12 @@ class TrainNode:
                 
                 
                 now = time.time()
-                if (now-then)>1:
-                    daylight = int(light.read_u16()/65000*100)
-                    print(daylight)
-                    self.hub.set_power(1, daylight if daylight>15 else 0)
-                    then = now
+                # light sensor disabled
+                # if (now-then)>1:
+                #     daylight = int(light.read_u16()/65000*100)
+                #     print(daylight)
+                #     self.hub.set_power(1, daylight if daylight>15 else 0)
+                #     then = now
                     
                 
                 if now - self._last_ping >= max(2, config.MQTT_KEEPALIVE_S // 3):
@@ -676,10 +943,13 @@ class TrainNode:
         except Exception:
             pass
         self.hub.close()
+        if self._csv is not None:
+            self._csv.close()
         self.led.set(False)
 
 
 def main():
+    print("=== train firmware {} starting ===".format(getattr(config, "FIRMWARE_VERSION", "?")))
     node = TrainNode()
     try:
         node.run()

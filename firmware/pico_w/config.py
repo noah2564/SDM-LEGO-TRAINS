@@ -12,17 +12,17 @@ Nothing else in the firmware hardcodes any of these values.
 TRAIN_ID = "train-001"
 DEVICE_ID = "pico-001"
 TRAIN_NAME = "ICE"
-FIRMWARE_VERSION = "1.0.0"
+FIRMWARE_VERSION = "1.1.0"
 
 # --- Wi-Fi ------------------------------------------------------------
-WIFI_SSID = 'VictoryRoyale'
-WIFI_PASSWORD = 'ChristIsKing'
-WIFI_COUNTRY = ""  # regulatory domain; affects the usable channels
+WIFI_SSID = "MARK-V 6730"
+WIFI_PASSWORD = "LegoTrains"
+WIFI_COUNTRY = "DK"  # regulatory domain; affects the usable channels
 WIFI_CONNECT_TIMEOUT_S = 20
 
 # --- MQTT -------------------------------------------------------------
 # IP or hostname of the machine running the Docker stack.
-MQTT_HOST = "10.116.98.5"
+MQTT_HOST = "192.168.137.1"
 MQTT_PORT = 1883
 MQTT_USERNAME = None  # set when broker authentication is enabled
 MQTT_PASSWORD = None
@@ -59,3 +59,22 @@ BATTERY_DIVIDER_RATIO = 3.0
 
 STATUS_LED_ENABLED = True
 LOG_LEVEL = "INFO"
+
+# --- Obstacle sensors (HC-SR04, handled on the Pico) -------------------
+SENSORS_ENABLED = True
+# (name, trig GPIO, echo GPIO). Echo needs a 5V->3.3V divider if the sensor
+# is powered from 5V; from 3V3 it is wired straight to the GPIO.
+SENSOR_PINS = (("left", 2, 3), ("right", 4, 5))
+SENSOR_TIMEOUT_US = 12000     # echo wait per ping, ~2 m
+SENSOR_MIN_CM = 2.0           # closer than this is clamped, not ignored
+SENSOR_WINDOW = 3             # median over the last N pings per sensor
+SENSOR_SLOW_START_CM = 30     # start slowing below this distance
+SENSOR_CRAWL_CM = 10          # at or below this: crawl speed
+SENSOR_STOP_CM = 5            # at or below this: stop
+SENSOR_CRAWL_SPEED = 20       # % power while crawling (motors stall below ~this)
+SENSOR_HALT_AFTER_S = 1.5     # halt if still within CRAWL_CM after this long
+SENSOR_ACCEL_PCT_S = 40       # how fast the limit may rise again, % per second
+SENSOR_LOOKAHEAD_S = 0.6      # fast approaches count as nearer by this much
+SENSOR_MAX_CLOSING_CM_S = 100 # closing speeds above this are capped (noise, objects popping into view)
+SENSOR_RESUME_MARGIN_CM = 3   # extra room needed before resuming after a stop
+SENSOR_LOG_CSV = False        # True: write log_NNN.csv on the Pico for tuning
