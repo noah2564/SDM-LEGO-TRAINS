@@ -195,6 +195,7 @@ The backend adds `v`, `command_id`, `train_id` and `ts` to every command:
 | `clear_emergency` | — | Releases the latch |
 | `set_config` | `safety_timeout_s`, `telemetry_interval_s` | Retune a device without reflashing |
 | `ping` | — | Liveness probe |
+| `set_light` | `brightness` 0–100 | Train lights on the hub's light port (B). Also accepted during an emergency stop |
 
 Anything else is rejected with HTTP 422 and never reaches the broker.
 

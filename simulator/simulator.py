@@ -60,6 +60,7 @@ class SimulatedTrain:
     target_speed: int = 0
     speed: float = 0.0
     direction: str = "forward"
+    light: int = 0
     emergency_stop: bool = False
     last_server_contact: float = field(default_factory=time.monotonic)
     started_at: float = field(default_factory=time.monotonic)
@@ -230,6 +231,12 @@ class SimulatedTrain:
                 self.safety_timeout = float(payload["safety_timeout_s"])
             if payload.get("telemetry_interval_s"):
                 self.telemetry_interval = float(payload["telemetry_interval_s"])
+        elif command == "set_light":
+            try:
+                self.light = max(0, min(100, int(payload.get("brightness", 0))))
+            except (TypeError, ValueError):
+                self._log.warning("Bad brightness value: %r", payload.get("brightness"))
+                return
         elif command == "ping":
             pass
         else:
@@ -308,6 +315,7 @@ class SimulatedTrain:
                 "timestamp": iso_now(),
                 "speed": int(round(self.speed)),
                 "direction": self.direction,
+                "light": self.light,
                 "battery": round(self.battery, 2),
                 "connected": True,
                 "emergency_stop": self.emergency_stop,

@@ -17,6 +17,7 @@
     linkUp: false,
     retry: 0,
     pendingSpeed: new Map(),  // train id -> timer, so dragging does not flood
+    lightHold: new Map(),     // train id -> time until which telemetry may not move the light slider
   };
 
   const $ = (selector) => document.querySelector(selector);
@@ -172,6 +173,10 @@
         <button data-act="stop" class="halt">Stop</button>
         <button data-act="forward">Forward</button>
       </div>
+      <div class="throttle lights">
+        <div class="lights-label"><span>Lights</span><span><span class="readout-light">0</span>%</span></div>
+        <input type="range" class="light-range" min="0" max="100" step="5" value="0" aria-label="Lights">
+      </div>
       <div class="plate-foot">
         <span class="foot-note"></span>
         <button data-act="details">Details</button>
@@ -181,6 +186,15 @@
     slider.addEventListener("input", () => {
       plate.querySelector(".readout-speed").textContent = slider.value;
       queueSpeed(train.id, Number(slider.value));
+    });
+    const lightSlider = plate.querySelector(".light-range");
+    lightSlider.addEventListener("input", () => {
+      plate.querySelector(".readout-light").textContent = lightSlider.value;
+    });
+    lightSlider.addEventListener("change", () => {
+      // One command when the slider is released, not one per pixel of dragging.
+      state.lightHold.set(train.id, Date.now() + 2500);
+      send(train.id, { command: "set_light", brightness: Number(lightSlider.value) });
     });
     plate.querySelector('[data-act="forward"]').onclick = () => drive(train.id, "forward");
     plate.querySelector('[data-act="backward"]').onclick = () => drive(train.id, "backward");
@@ -212,6 +226,20 @@
     }
     slider.max = train.max_speed;
     slider.disabled = offline || train.emergency_stop;
+
+    // Lights stay usable during an emergency stop: they are not a drive command.
+    const lightSlider = plate.querySelector(".light-range");
+    const telemetry = train.last_telemetry || {};
+    const reported = telemetry.extra ? telemetry.extra.light : undefined;
+    if (
+      typeof reported === "number" &&
+      document.activeElement !== lightSlider &&
+      Date.now() > (state.lightHold.get(train.id) || 0)
+    ) {
+      lightSlider.value = reported;
+      plate.querySelector(".readout-light").textContent = reported;
+    }
+    lightSlider.disabled = offline;
 
     plate.querySelector(".readout-dir").innerHTML =
       train.direction === "backward" ? `<span>&#9664;</span> Reverse` : `Forward <span>&#9654;</span>`;

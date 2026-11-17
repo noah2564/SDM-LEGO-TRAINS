@@ -598,6 +598,8 @@ class TrainNode:
         self._last_battery_req = 0
         self._pending_events = []
         self._last_status_ms = 0
+        self.light = 0               # light brightness 0-100, set from the web UI
+        self._light_sent = None      # last value written to the hub (None = unknown)
 
     # -- Wi-Fi ---------------------------------------------------------------
     def connect_wifi(self):
@@ -716,8 +718,7 @@ class TrainNode:
         if not self.hub.connected:
             return
         try:
-            self._apply_to_hub(0)
-            self.hub.set_power(1, 0)
+            self._apply_to_hub(0)  # motors only; the lights keep their slider value
         except Exception as exc:
             log("Hub stop failed ({}): {}".format(reason, exc), "ERROR")
 
@@ -746,6 +747,10 @@ class TrainNode:
             cmd = self._parse_payload(payload)
             name = str(cmd.get("command", cmd.get("action", "set_speed"))).lower()
 
+            if name in ("set_light", "light"):
+                self._set_light(cmd.get("brightness", cmd.get("light", 0)))
+                return
+
             if name in ("stop", "brake", "emergency_stop", "estop"):
                 target = 0
             elif name in ("set_speed", "speed", "drive", "move"):
@@ -772,6 +777,28 @@ class TrainNode:
             log("Command handling failed: {}".format(exc), "ERROR")
             self._stop_hub("command error")
             self._pending_events.append(("command_error", str(exc), "error"))
+
+    # -- lights ----------------------------------------------------------------
+    def _set_light(self, value):
+        """Light brightness 0-100 on the hub's light port (port 1, 'B')."""
+        try:
+            self.light = max(0, min(100, int(value)))
+        except (TypeError, ValueError):
+            log("Ignoring bad brightness {!r}".format(value), "WARNING")
+            return
+        self._sync_light()
+        log("Backend -> lights {}%".format(self.light), "INFO")
+        self._publish_telemetry(force=True)
+
+    def _sync_light(self):
+        """Write the light value to the hub when it changed or the hub reconnected."""
+        if not self.hub.connected or self._light_sent == self.light:
+            return
+        try:
+            self.hub.set_power(1, self.light)
+            self._light_sent = self.light
+        except Exception as exc:
+            log("Light update failed: {}".format(exc), "ERROR")
 
     # -- safety -----------------------------------------------------------------
     def check_safety(self):
@@ -803,6 +830,7 @@ class TrainNode:
             "hub_connected": self.hub.connected,
             "battery": self.hub.battery,
             "firmware": config.FIRMWARE_VERSION,
+            "light": self.light,
         }
         if self.guard.enabled:
             telemetry["distance_cm"] = [
@@ -883,6 +911,7 @@ class TrainNode:
                         continue
 
                 if not self.hub.connected:
+                    self._light_sent = None  # re-send the light value once it reconnects
                     self._ensure_hub()  # blocks during the BLE scan
                     # Keep the MQTT session alive after a long scan.
                     self.mqtt.check_messages()
@@ -894,6 +923,7 @@ class TrainNode:
                 self.mqtt.check_messages()
                 self.hub.poll()
                 self._guard_step()
+                self._sync_light()
 
                 if self.check_safety():
                     self._pending_events.append(

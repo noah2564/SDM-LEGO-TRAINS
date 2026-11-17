@@ -62,6 +62,20 @@ class TestCommandValidation:
         with pytest.raises(CommandError):
             validate_command({"command": "set_config"})
 
+    def test_set_light_is_normalised(self) -> None:
+        assert validate_command({"command": "set_light", "brightness": 60}) == {
+            "command": "set_light",
+            "brightness": 60,
+        }
+
+    @pytest.mark.parametrize("brightness", [-1, 101, "bright"])
+    def test_set_light_out_of_range_is_rejected(self, brightness: object) -> None:
+        with pytest.raises(CommandError):
+            validate_command({"command": "set_light", "brightness": brightness})
+
+    def test_set_light_is_allowed_during_emergency_stop(self) -> None:
+        assert "set_light" in protocol.SAFETY_COMMANDS
+
     def test_envelope_carries_identity_and_time(self) -> None:
         envelope = protocol.build_command_envelope("train-001", {"command": "stop"})
         assert envelope["train_id"] == "train-001"

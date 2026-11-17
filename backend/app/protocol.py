@@ -142,6 +142,13 @@ class PingCommand(BaseCommand):
     command: Literal["ping"]
 
 
+class SetLightCommand(BaseCommand):
+    """Train lights (hub light port) from 0 (off) to 100 (full brightness)."""
+
+    command: Literal["set_light"]
+    brightness: int = Field(ge=0, le=100)
+
+
 COMMAND_MODELS: Final[dict[str, type[BaseCommand]]] = {
     "set_speed": SetSpeedCommand,
     "set_direction": SetDirectionCommand,
@@ -150,11 +157,12 @@ COMMAND_MODELS: Final[dict[str, type[BaseCommand]]] = {
     "clear_emergency": ClearEmergencyCommand,
     "set_config": SetConfigCommand,
     "ping": PingCommand,
+    "set_light": SetLightCommand,
 }
 
 #: Commands that must be honoured even while the emergency-stop latch is set.
 SAFETY_COMMANDS: Final[frozenset[str]] = frozenset(
-    {"stop", "emergency_stop", "clear_emergency", "ping", "set_config"}
+    {"stop", "emergency_stop", "clear_emergency", "ping", "set_config", "set_light"}
 )
 
 

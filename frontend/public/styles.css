@@ -200,6 +200,12 @@ main { padding: 22px 24px 8px; }
 }
 .throttle input[type=range]:disabled::-webkit-slider-thumb { background: #4A5A51; border-color: #333; }
 .throttle input[type=range]:disabled::-moz-range-thumb { background: #4A5A51; border-color: #333; }
+.lights { margin-top: 10px; }
+.lights-label {
+  display: flex; justify-content: space-between;
+  font-size: .72rem; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ink-dim);
+}
 .ticks { display: flex; justify-content: space-between; font-size: 11px; color: var(--ink-dim); font-variant-numeric: tabular-nums; }
 
 .controls { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
