@@ -453,6 +453,24 @@ Firmware errors are not swallowed: an unhandled exception in the main loop
 triggers an emergency stop, and a fatal error resets the board — a rebooting
 Pico is safer than a stuck one.
 
+**Obstacle sensing (limited).** Two front-facing HC-SR04 sensors per train are
+read on the Pico itself. Anything within about 10 cm makes the train crawl; if
+it is still that close after `SENSOR_HALT_AFTER_S` the train halts until the
+way is clear, then resumes at crawl speed and speeds up gradually. Reversing is
+never limited. Telemetry reports `distance_cm`, `obstacle`, `speed_limit` and
+`speed_applied`.
+
+Known limitations:
+
+- An ultrasonic sensor reports only the first echo. It cannot tell a train from
+  a tunnel mouth, a wall or decoration, so the system assumes nothing but trains
+  sits close to the track. Scenery within ~10 cm will cause slowdowns and halts.
+- No echo is treated as “clear”, so a dead or unplugged sensor looks like an
+  empty track.
+- A halted train stays halted while the obstruction remains; reverse it or clear
+  the obstacle.
+- It reduces crash risk. It does not guarantee a stop.
+
 ---
 
 ## Running the simulator

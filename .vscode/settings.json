@@ -1,0 +1,4 @@
+{
+  "micropico.syncFolder": "firmware/pico_w",
+  "micropico.openOnStart": true
+}
