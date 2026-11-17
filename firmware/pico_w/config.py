@@ -15,14 +15,14 @@ TRAIN_NAME = "ICE"
 FIRMWARE_VERSION = "1.0.0"
 
 # --- Wi-Fi ------------------------------------------------------------
-WIFI_SSID = "your-wifi-ssid"
-WIFI_PASSWORD = "your-wifi-password"
-WIFI_COUNTRY = "DK"  # regulatory domain; affects the usable channels
+WIFI_SSID = 'VictoryRoyale'
+WIFI_PASSWORD = 'ChristIsKing'
+WIFI_COUNTRY = ""  # regulatory domain; affects the usable channels
 WIFI_CONNECT_TIMEOUT_S = 20
 
 # --- MQTT -------------------------------------------------------------
 # IP or hostname of the machine running the Docker stack.
-MQTT_HOST = "192.168.1.10"
+MQTT_HOST = "10.116.98.5"
 MQTT_PORT = 1883
 MQTT_USERNAME = None  # set when broker authentication is enabled
 MQTT_PASSWORD = None
