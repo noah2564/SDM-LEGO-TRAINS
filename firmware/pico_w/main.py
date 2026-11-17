@@ -20,8 +20,14 @@ Optional config.py settings used here (defaults in brackets):
 
 Expected command payloads (dict, or JSON text/bytes):
   {"command": "set_speed", "speed": -100..100}   (also "action"; "speed" alone works)
-  {"command": "stop"}  /  "brake"  /  "emergency_stop"
-  An optional "direction": "reverse" flips the sign of "speed".
+  {"command": "stop"}  /  "brake"  /  "emergency_stop" (latches until clear_emergency)
+  An optional "direction": "reverse" flips the sign of "speed"; without it the
+  last direction is kept.
+  {"command": "set_direction", "direction": "forward"|"backward"}  (stops first)
+  {"command": "clear_emergency"}  /  {"command": "ping"}
+  {"command": "set_config", "safety_timeout_s": .., "telemetry_interval_s": ..}
+  {"command": "set_light", "brightness": 0..100}
+  Unknown commands are logged and ignored; they never stop the train.
   payload None (server heartbeat) only resets the safety watchdog.
 """
 
@@ -598,6 +604,8 @@ class TrainNode:
         self._last_battery_req = 0
         self._pending_events = []
         self._last_status_ms = 0
+        self.direction = "forward"   # last commanded direction
+        self.estop = False           # emergency stop latch (cleared by clear_emergency)
         self.light = 0               # light brightness 0-100, set from the web UI
         self._light_sent = None      # last value written to the hub (None = unknown)
 
@@ -751,15 +759,47 @@ class TrainNode:
                 self._set_light(cmd.get("brightness", cmd.get("light", 0)))
                 return
 
+            if name == "ping":
+                return  # the contact was already noted above
+            if name == "set_config":
+                self._set_config(cmd)
+                return
+            if name == "clear_emergency":
+                self.estop = False
+                self.speed = 0
+                self._pending_events.append(("emergency_cleared", "Ready to drive", "info"))
+                self._publish_telemetry(force=True)
+                return
+            if name == "set_direction":
+                new_dir = self._direction_of(cmd.get("direction"))
+                if new_dir != self.direction and self.speed != 0:
+                    self.speed = 0  # stop before reversing
+                    if self.hub.connected:
+                        self._update_drive(force=True)
+                self.direction = new_dir
+                self._publish_telemetry(force=True)
+                return
+
             if name in ("stop", "brake", "emergency_stop", "estop"):
                 target = 0
+                if name in ("emergency_stop", "estop"):
+                    self.estop = True
             elif name in ("set_speed", "speed", "drive", "move"):
-                target = int(cmd.get("speed", 0))
-                if str(cmd.get("direction", "forward")).lower() in ("reverse", "backward"):
-                    target = -abs(target)
-                target = max(-100, min(100, target))
+                if self.estop:
+                    self._pending_events.append(
+                        ("command_rejected", "Emergency stop is latched", "warning")
+                    )
+                    return
+                self.direction = self._direction_of(cmd.get("direction", self.direction))
+                target = max(0, min(100, abs(int(cmd.get("speed", 0)))))
+                if self.direction == "backward":
+                    target = -target
             else:
-                raise ValueError("unknown command '{}'".format(name))
+                log("Ignoring unknown command '{}'".format(name), "WARNING")
+                self._pending_events.append(
+                    ("command_ignored", "unknown command '{}'".format(name), "warning")
+                )
+                return
 
             self.speed = target
             # The backend update is forwarded to the hub right away.
@@ -777,6 +817,25 @@ class TrainNode:
             log("Command handling failed: {}".format(exc), "ERROR")
             self._stop_hub("command error")
             self._pending_events.append(("command_error", str(exc), "error"))
+
+    @staticmethod
+    def _direction_of(value):
+        return "backward" if str(value).lower() in ("reverse", "backward") else "forward"
+
+    def _set_config(self, cmd):
+        """Retune the watchdog and telemetry rate without reflashing."""
+        try:
+            timeout = cmd.get("safety_timeout_s")
+            interval = cmd.get("telemetry_interval_s")
+            if timeout is not None:
+                config.SAFETY_TIMEOUT_S = max(1.0, min(120.0, float(timeout)))
+            if interval is not None:
+                config.TELEMETRY_INTERVAL_S = max(0.2, min(60.0, float(interval)))
+        except (TypeError, ValueError):
+            log("Ignoring bad set_config values", "WARNING")
+            return
+        log("Config: safety {}s, telemetry {}s".format(
+            config.SAFETY_TIMEOUT_S, config.TELEMETRY_INTERVAL_S), "INFO")
 
     # -- lights ----------------------------------------------------------------
     def _set_light(self, value):
@@ -831,6 +890,7 @@ class TrainNode:
             "battery": self.hub.battery,
             "firmware": config.FIRMWARE_VERSION,
             "light": self.light,
+            "direction": self.direction,
         }
         if self.guard.enabled:
             telemetry["distance_cm"] = [
